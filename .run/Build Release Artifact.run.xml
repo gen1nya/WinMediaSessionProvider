@@ -1,0 +1,8 @@
+﻿<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Build Release Artifact" type="DotNetFolderPublish" factoryName="Publish to folder">
+    <riderPublish configuration="Release" delete_existing_files="true" include_all_content_for_self_extract="true" include_native_libs_for_self_extract="true" platform="Any CPU" produce_single_file="true" runtime="win-x64" self_contained="true" target_folder="$PROJECT_DIR$/MediaSessionWSProvider/bin/Release/net8.0-windows10.0.26100.0/win-x64/publish" target_framework="net8.0-windows10.0.26100.0" uuid_high="8765073047406004368" uuid_low="-6782816649979255481" />
+    <method v="2">
+      <option name="Build" default="false" projectName="MediaSessionWSProvider" projectPath="$PROJECT_DIR$/MediaSessionWSProvider/MediaSessionWSProvider.csproj" />
+    </method>
+  </configuration>
+</component>

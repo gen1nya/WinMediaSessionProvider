@@ -25,38 +25,75 @@ namespace MediaSessionWSProvider
         };
 
         private FullMediaState _lastFullState;
+        private CancellationTokenSource _internalCts = new();
 
         public Worker(ILogger<Worker> logger)
         {
             _logger = logger;
         }
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        public override Task StopAsync(CancellationToken cancellationToken)
         {
-            // Запуск WebSocket-сервера
+            _logger.LogInformation("StopAsync called. Cleaning up...");
+            _internalCts.Cancel();
+            
+            try
+            {
+                _httpListener?.Close();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Ошибка при закрытии HttpListener");
+            }
+
+            List<WebSocket> clientsSnapshot;
+            lock (_clientsLock)
+            {
+                clientsSnapshot = _clients.ToList();
+                _clients.Clear();
+            }
+
+            if (clientsSnapshot.Any())
+            {
+                var closeTasks = clientsSnapshot
+                    .Select(ws => CloseClientWithTimeoutAsync(ws, TimeSpan.FromSeconds(5)))
+                    .ToArray();
+                Task.WaitAll(closeTasks); // ждём не дольше 5 секунд
+            }
+            
+            _messageChannel.Writer.Complete();
+            _logger.LogInformation("Cleanup finished. Возвращаю управление из StopAsync.");
+            return Task.CompletedTask;
+        }
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        { 
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _internalCts.Token);
+            var linkedToken = linkedCts.Token;
+            
             _httpListener = new HttpListener();
             _httpListener.Prefixes.Add("http://localhost:5001/ws/");
             _httpListener.Start();
-            _ = AcceptWebSocketClientsAsync(stoppingToken);
-
-            // Запуск рассылки сообщений
-            _ = ProcessMessageQueueAsync(stoppingToken);
-
-            // Инициализация менеджера медиа-сессий
+            _ = AcceptWebSocketClientsAsync(linkedToken);
+            _ = ProcessMessageQueueAsync(linkedToken);
+            
             _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-
-            // Подписка на смену текущей сессии
             _sessionManager.CurrentSessionChanged += async (_, __) =>
             {
                 _logger.LogInformation("CurrentSessionChanged event");
-                await SubscribeToSessionAsync(stoppingToken);
+                await SubscribeToSessionAsync(linkedToken);
             };
+            
+            await SubscribeToSessionAsync(linkedToken);
 
-            // Первичная подписка на уже активную сессию
-            await SubscribeToSessionAsync(stoppingToken);
-
-            // Поддержание жизненного цикла
-            await Task.Delay(Timeout.Infinite, stoppingToken);
+            try
+            {
+                await Task.Delay(Timeout.Infinite, linkedToken);
+            }
+            catch (OperationCanceledException)
+            {
+                
+            }
         }
 
         private async Task SubscribeToSessionAsync(CancellationToken token)
@@ -69,26 +106,33 @@ namespace MediaSessionWSProvider
             }
 
             _logger.LogInformation("Subscribed to session: {AppId}", session.SourceAppUserModelId);
-
-            // Подписка на события
-            session.MediaPropertiesChanged += async (_, __) =>
-            {
-                _logger.LogInformation("MediaPropertiesChanged event");
-                await HandleFullStateChangeAsync(token);
-            };
-            session.PlaybackInfoChanged += async (_, __) =>
-            {
-                _logger.LogInformation("PlaybackInfoChanged event");
-                await HandleFullStateChangeAsync(token);
-            };
-            session.TimelinePropertiesChanged += async (_, __) =>
-            {
-                _logger.LogInformation("TimelinePropertiesChanged event");
-                await HandleFullStateChangeAsync(token);
-            };
+            
+            session.MediaPropertiesChanged -= MediaPropertiesChangedHandler;
+            session.PlaybackInfoChanged -= PlaybackInfoChangedHandler;
+            session.TimelinePropertiesChanged -= TimelinePropertiesChangedHandler;
+            
+            session.MediaPropertiesChanged += MediaPropertiesChangedHandler;
+            session.PlaybackInfoChanged += PlaybackInfoChangedHandler;
+            session.TimelinePropertiesChanged += TimelinePropertiesChangedHandler;
 
             // Первоначальная отправка состояния
             await HandleFullStateChangeAsync(token);
+
+            async void MediaPropertiesChangedHandler(GlobalSystemMediaTransportControlsSession mSession, MediaPropertiesChangedEventArgs args)
+            {
+                _logger.LogInformation("MediaPropertiesChanged event");
+                await HandleFullStateChangeAsync(token);
+            }
+            async void PlaybackInfoChangedHandler(GlobalSystemMediaTransportControlsSession mSession, PlaybackInfoChangedEventArgs args)
+            {
+                _logger.LogInformation("PlaybackInfoChanged event");
+                await HandleFullStateChangeAsync(token);
+            }
+            async void TimelinePropertiesChangedHandler(GlobalSystemMediaTransportControlsSession mSession, TimelinePropertiesChangedEventArgs args)
+            {
+                _logger.LogInformation("TimelinePropertiesChanged event");
+                await HandleFullStateChangeAsync(token);
+            }
         }
 
         private async Task HandleFullStateChangeAsync(CancellationToken token)
@@ -124,7 +168,7 @@ namespace MediaSessionWSProvider
             {
                 try
                 {
-                    var context = await _httpListener.GetContextAsync();
+                    var context = await _httpListener.GetContextAsync().ConfigureAwait(false);
                     if (!context.Request.IsWebSocketRequest)
                     {
                         context.Response.StatusCode = 400;
@@ -132,22 +176,33 @@ namespace MediaSessionWSProvider
                         continue;
                     }
 
-                    var wsContext = await context.AcceptWebSocketAsync(null);
+                    var wsContext = await context.AcceptWebSocketAsync(null).ConfigureAwait(false);
                     var ws = wsContext.WebSocket;
                     lock (_clientsLock) _clients.Add(ws);
                     _logger.LogInformation("WebSocket client connected");
 
-                    // Отправка последнего состояния клиенту
+                    // Отправка последнего состояния сразу же новому клиенту
                     if (_lastFullState != null && ws.State == WebSocketState.Open)
                     {
                         var metaEnvelope = new { type = "metadata", data = _lastFullState };
                         var metaJson = JsonSerializer.Serialize(metaEnvelope, _jsonOptions);
-                        await ws.SendAsync(Encoding.UTF8.GetBytes(metaJson), WebSocketMessageType.Text, true, CancellationToken.None);
+                        var buffer = Encoding.UTF8.GetBytes(metaJson);
+                        await ws.SendAsync(buffer, WebSocketMessageType.Text, endOfMessage: true, token).ConfigureAwait(false);
                     }
                 }
-                catch (Exception ex) when (ex is HttpListenerException || ex is ObjectDisposedException)
+                catch (HttpListenerException)
                 {
-                    _logger.LogInformation("WebSocket listener stopped.");
+                    _logger.LogInformation("WebSocket listener stopped (HttpListenerException).");
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    _logger.LogInformation("HttpListener disposed, прекращаем прием клиентов.");
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("Отмена AcceptWebSocketClientsAsync по токену.");
                     break;
                 }
                 catch (Exception ex)
@@ -160,16 +215,23 @@ namespace MediaSessionWSProvider
         private async Task ProcessMessageQueueAsync(CancellationToken token)
         {
             var reader = _messageChannel.Reader;
-            while (await reader.WaitToReadAsync(token))
+            try
             {
-                while (reader.TryRead(out var message))
+                while (await reader.WaitToReadAsync(token).ConfigureAwait(false))
                 {
-                    await BroadcastAsync(message);
+                    while (reader.TryRead(out var message))
+                    {
+                        await BroadcastAsync(message, token).ConfigureAwait(false);
+                    }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("ProcessMessageQueueAsync отменен по токену.");
             }
         }
 
-        private async Task BroadcastAsync(string message)
+        private async Task BroadcastAsync(string message, CancellationToken token)
         {
             var buffer = Encoding.UTF8.GetBytes(message);
             var dead = new List<WebSocket>();
@@ -180,7 +242,7 @@ namespace MediaSessionWSProvider
             {
                 try
                 {
-                    await ws.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+                    await ws.SendAsync(buffer, WebSocketMessageType.Text, true, token).ConfigureAwait(false);
                 }
                 catch (WebSocketException ex)
                 {
@@ -234,10 +296,45 @@ namespace MediaSessionWSProvider
                 position = position,
             };
         }
+        
+        private async Task CloseClientWithTimeoutAsync(WebSocket ws, TimeSpan timeout)
+        {
+            if (ws.State != WebSocketState.Open && ws.State != WebSocketState.CloseReceived)
+            {
+                ws.Abort();
+                return;
+            }
+
+            using var cts = new CancellationTokenSource(timeout);
+
+            try
+            {
+                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Service stopping", cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("CloseAsync для WebSocket-клиента превысил таймаут {Timeout}. Принудительно убиваем.", timeout);
+                ws.Abort();
+            }
+            catch (WebSocketException ex)
+            {
+                _logger.LogWarning(ex, "WebSocketException при попытке CloseAsync, принудительно Abort.");
+                ws.Abort();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Иная ошибка при CloseAsync, Abort.");
+                ws.Abort();
+            }
+        }
 
         public override void Dispose()
         {
-            _httpListener?.Close();
+            try
+            {
+                _httpListener?.Close();
+            }
+            catch { }
             base.Dispose();
         }
     }

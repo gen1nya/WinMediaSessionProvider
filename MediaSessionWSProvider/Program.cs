@@ -1,8 +1,33 @@
+using System.Windows.Forms;
 using MediaSessionWSProvider;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
-var builder = Host.CreateApplicationBuilder(args);
+Application.EnableVisualStyles();
+Application.SetCompatibleTextRenderingDefault(false);
 
-builder.Services.AddHostedService<Worker>();
+using var tray = new TrayHost();
 
-var host = builder.Build();
-host.Run();
+// Создаём хост вручную
+var host = Host.CreateDefaultBuilder(args)
+    .ConfigureServices(services =>
+    {
+        services.AddHostedService<Worker>();
+    })
+    .ConfigureLogging(logging =>
+    {
+        logging.ClearProviders();
+        logging.AddConsole();
+        logging.AddEventLog();
+    })
+    .Build();
+
+// Запускаем хост асинхронно
+await host.StartAsync();
+
+// Запускаем WinForms message loop (нужен для NotifyIcon)
+Application.Run();
+
+// После выхода из трея — корректно завершаем
+await host.StopAsync();
