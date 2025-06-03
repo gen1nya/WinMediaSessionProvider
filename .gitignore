@@ -1,0 +1,66 @@
+﻿## Build results
+bin/
+obj/
+out/
+
+## Rider project files
+.idea/
+*.sln.iml
+
+## User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## User Secrets (можно оставить, если не коммитишь secrets)
+secrets.json
+
+## DotNET artifacts
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## ASP.NET Scaffolding
+ScaffoldingReadMe.txt
+
+## DotCover
+*.dcvr
+
+## Logs
+*.log
+
+## Visual Studio Code
+.vscode/
+
+## dotnet CLI
+.vs/
+*.dbmdl
+*.pdb
+
+## NuGet packages
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+# Uncomment if using package cache
+# ~/.nuget/packages
+
+## OS-specific
+.DS_Store
+Thumbs.db
+
+## Publish artifacts
+publish/
+*.Publish.xml
+
+## Test results
+TestResults/
+*.coverage
+*.coveragexml
+
+## Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo

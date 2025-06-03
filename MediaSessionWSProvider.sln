@@ -1,0 +1,16 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MediaSessionWSProvider", "MediaSessionWSProvider\MediaSessionWSProvider.csproj", "{79A3CB7F-4CFC-4890-A1DE-98319961A547}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{79A3CB7F-4CFC-4890-A1DE-98319961A547}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{79A3CB7F-4CFC-4890-A1DE-98319961A547}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{79A3CB7F-4CFC-4890-A1DE-98319961A547}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{79A3CB7F-4CFC-4890-A1DE-98319961A547}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
