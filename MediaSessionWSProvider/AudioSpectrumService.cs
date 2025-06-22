@@ -1,10 +1,8 @@
-using System;
-using System.Numerics;
-using System.Threading;
 using System.Threading.Channels;
 using NAudio.Wave;
 using NAudio.Dsp;
-using Microsoft.Extensions.Logging;
+using Complex = NAudio.Dsp.Complex;
+using Timer = System.Threading.Timer;
 
 namespace MediaSessionWSProvider;
 
@@ -52,7 +50,10 @@ public class AudioSpectrumService : IDisposable
         {
             float sample = BitConverter.ToSingle(bytes, i * sizeof(float));
             sample *= (float)FastFourierTransform.HammingWindow(i, fftLength);
-            fftBuffer[i] = new Complex(sample, 0);
+            fftBuffer[i] = new Complex();
+            fftBuffer[i].X = sample;
+            fftBuffer[i].Y = 0;
+
         }
 
         FastFourierTransform.FFT(true, (int)Math.Log2(fftLength), fftBuffer);
@@ -66,7 +67,7 @@ public class AudioSpectrumService : IDisposable
             int end = start + binsPerBand;
             for (int j = start; j < end; j++)
             {
-                var mag = (float)Math.Sqrt(fftBuffer[j].Real * fftBuffer[j].Real + fftBuffer[j].Imaginary * fftBuffer[j].Imaginary);
+                var mag = (float)Math.Sqrt(fftBuffer[j].X * fftBuffer[j].X + fftBuffer[j].Y * fftBuffer[j].Y);
                 sum += mag;
             }
             bands[b] = sum / binsPerBand;
