@@ -28,6 +28,9 @@ public class FftService : IDisposable
     private BufferedWaveProvider? _buffer;
     private Thread? _worker;
     private CancellationTokenSource? _cts;
+    private Timer? _notifyTimer;
+    private readonly object _dataLock = new();
+    private readonly float[] _latestSpectrum = new float[Columns];
 
     private int[]? _startBin;
     private int[]? _endBin;
@@ -111,6 +114,8 @@ public class FftService : IDisposable
             _worker = new Thread(() => WorkerLoop(_cts.Token)) { IsBackground = true };
             _worker.Start();
 
+            _notifyTimer = new Timer(_ => NotifySpectrum(), null, 0, 33);
+
             _logger.LogInformation("FFT capture started");
         }
         catch (Exception ex)
@@ -126,6 +131,8 @@ public class FftService : IDisposable
         {
             _cts?.Cancel();
             _worker?.Join();
+            _notifyTimer?.Dispose();
+            _notifyTimer = null;
             if (_capture != null)
             {
                 _capture.StopRecording();
@@ -199,20 +206,28 @@ public class FftService : IDisposable
                 res[b] = (float)((clamped - DbFloor) / -DbFloor);
             }
 
-            try
+            lock (_dataLock)
             {
-                SpectrumAvailable?.Invoke(res);
+                Array.Copy(res, _latestSpectrum, Columns);
             }
-            catch (Exception ex)
-            {
-                _logger.LogInformation(ex, "Ошибка SpectrumAvailable обработчика");
-            }
+        }
+    }
 
-            try
-            {
-                Task.Delay(33, token).Wait(token);
-            }
-            catch { }
+    private void NotifySpectrum()
+    {
+        float[] data = new float[Columns];
+        lock (_dataLock)
+        {
+            Array.Copy(_latestSpectrum, data, Columns);
+        }
+
+        try
+        {
+            SpectrumAvailable?.Invoke(data);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation(ex, "Ошибка SpectrumAvailable обработчика");
         }
     }
 
