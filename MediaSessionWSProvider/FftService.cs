@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using Microsoft.Extensions.Logging;
 using NAudio.CoreAudioApi;
 using NAudio.Dsp;
@@ -178,6 +179,7 @@ public class FftService : IDisposable
             var raw = new byte[_bytesNeeded];
             _buffer.Read(raw, 0, raw.Length);
 
+            float maxSample = 0f;
             for (int i = 0; i < FftLength; i++)
             {
                 int pos = i * _bytesPerSample * _channels;
@@ -186,6 +188,8 @@ public class FftService : IDisposable
                 sample *= (float)FastFourierTransform.HammingWindow(i, FftLength);
                 _fftBuf[i].X = sample;
                 _fftBuf[i].Y = 0;
+                float abs = Math.Abs(sample);
+                if (abs > maxSample) maxSample = abs;
             }
             FastFourierTransform.FFT(true, (int)Math.Log2(FftLength), _fftBuf);
 
@@ -205,6 +209,9 @@ public class FftService : IDisposable
                 double clamped = Math.Max(db, DbFloor);
                 res[b] = (float)((clamped - DbFloor) / -DbFloor);
             }
+
+            float maxRes = res.Max();
+            _logger.LogInformation("WorkerLoop buffer max {BufferMax}, FFT max {FftMax}", maxSample, maxRes);
 
             lock (_dataLock)
             {
