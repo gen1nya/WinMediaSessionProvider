@@ -5,7 +5,9 @@ using System.Text.Json;
 using System.Text.Encodings.Web;
 using System.Text.Unicode;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using Windows.Media.Control;
+using System.Threading.Tasks;
 
 namespace MediaSessionWSProvider
 {
@@ -26,10 +28,12 @@ namespace MediaSessionWSProvider
 
         private FullMediaState _lastFullState;
         private CancellationTokenSource _internalCts = new();
+        private readonly AudioSpectrumService _spectrumService;
 
-        public Worker(ILogger<Worker> logger)
+        public Worker(ILogger<Worker> logger, AudioSpectrumService spectrumService)
         {
             _logger = logger;
+            _spectrumService = spectrumService;
         }
 
         public override Task StopAsync(CancellationToken cancellationToken)
@@ -62,20 +66,23 @@ namespace MediaSessionWSProvider
             }
             
             _messageChannel.Writer.Complete();
+            _spectrumService.Dispose();
             _logger.LogInformation("Cleanup finished. Возвращаю управление из StopAsync.");
             return Task.CompletedTask;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-        { 
+        {
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _internalCts.Token);
             var linkedToken = linkedCts.Token;
-            
+
             _httpListener = new HttpListener();
             _httpListener.Prefixes.Add("http://localhost:5001/ws/");
             _httpListener.Start();
             _ = AcceptWebSocketClientsAsync(linkedToken);
             _ = ProcessMessageQueueAsync(linkedToken);
+            _spectrumService.Start();
+            _ = ReadSpectrumAsync(_spectrumService.SpectrumReader, linkedToken);
             
             _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
             _sessionManager.CurrentSessionChanged += async (_, __) =>
@@ -260,6 +267,23 @@ namespace MediaSessionWSProvider
             }
         }
 
+        private async Task ReadSpectrumAsync(ChannelReader<float[]> reader, CancellationToken token)
+        {
+            try
+            {
+                await foreach (var bands in reader.ReadAllAsync(token))
+                {
+                    var envelope = new { type = "spectrum", data = bands };
+                    var json = JsonSerializer.Serialize(envelope, _jsonOptions);
+                    await _messageChannel.Writer.WriteAsync(json, token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("ReadSpectrumAsync canceled");
+            }
+        }
+
         private async Task<FullMediaState> CreateFullMediaStateAsync(GlobalSystemMediaTransportControlsSession session)
         {
             var props = await session.TryGetMediaPropertiesAsync();
@@ -335,6 +359,7 @@ namespace MediaSessionWSProvider
                 _httpListener?.Close();
             }
             catch { }
+            _spectrumService.Dispose();
             base.Dispose();
         }
     }

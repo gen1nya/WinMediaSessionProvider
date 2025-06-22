@@ -13,6 +13,7 @@ using var tray = new TrayHost();
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices(services =>
     {
+        services.AddSingleton<AudioSpectrumService>();
         services.AddHostedService<Worker>();
     })
     .ConfigureLogging(logging =>
