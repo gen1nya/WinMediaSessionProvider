@@ -23,7 +23,9 @@ public class FftService : IDisposable
     };
 
     private readonly ILogger<FftService> _logger;
+    private readonly SettingsService _settings;
     private readonly MMDeviceEnumerator _enumr = new();
+    private readonly List<AudioDeviceInfo> _devices;
 
     private WasapiCapture? _capture;
     private BufferedWaveProvider? _buffer;
@@ -43,18 +45,37 @@ public class FftService : IDisposable
 
     private bool _enabled;
 
+    public bool IsEnabled => _enabled;
+
     public record AudioDeviceInfo(string Name, MMDevice Device, DataFlow Flow);
 
     public AudioDeviceInfo? CurrentDevice { get; private set; }
 
     public event Action<float[]>? SpectrumAvailable;
 
-    public FftService(ILogger<FftService> logger)
+    public FftService(ILogger<FftService> logger, SettingsService settings)
     {
         _logger = logger;
+        _settings = settings;
+
+        _devices = EnumerateDevices();
+        if (_devices.Count > 0)
+        {
+            var savedId = _settings.Data.DeviceId;
+            var dev = _devices.FirstOrDefault(d => d.Device.ID == savedId) ?? _devices[0];
+            CurrentDevice = dev;
+        }
+
+        _enabled = _settings.Data.FftEnabled;
+        if (_enabled)
+        {
+            StartCapture();
+        }
     }
 
-    public List<AudioDeviceInfo> GetDevices()
+    public List<AudioDeviceInfo> GetDevices() => new(_devices);
+
+    private List<AudioDeviceInfo> EnumerateDevices()
     {
         var list = new List<AudioDeviceInfo>();
         try
@@ -74,6 +95,8 @@ public class FftService : IDisposable
     public void SetDevice(AudioDeviceInfo info)
     {
         CurrentDevice = info;
+        _settings.Data.DeviceId = info.Device.ID;
+        _settings.Save();
         _logger.LogInformation("Selected device: {Device}", info.Name);
         if (_enabled)
             RestartCapture();
@@ -83,6 +106,8 @@ public class FftService : IDisposable
     {
         if (_enabled == enable) return;
         _enabled = enable;
+        _settings.Data.FftEnabled = enable;
+        _settings.Save();
         if (enable) StartCapture();
         else StopCapture();
     }

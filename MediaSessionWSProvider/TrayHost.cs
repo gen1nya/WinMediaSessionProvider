@@ -16,6 +16,7 @@ public class TrayHost : IDisposable
         _menu = new ContextMenuStrip();
         _fftToggleItem = new ToolStripMenuItem("FFT") { CheckOnClick = true };
         _fftToggleItem.CheckedChanged += (s, e) => _fftService.Enable(_fftToggleItem.Checked);
+        _fftToggleItem.Checked = _fftService.IsEnabled;
 
         _deviceMenu = new ToolStripMenuItem("Устройство");
         _deviceMenu.DropDownOpening += DeviceMenuOnDropDownOpening;

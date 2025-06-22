@@ -12,8 +12,9 @@ Application.SetCompatibleTextRenderingDefault(false);
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices(services =>
     {
-        services.AddHostedService<Worker>();
+        services.AddSingleton<SettingsService>();
         services.AddSingleton<FftService>();
+        services.AddHostedService<Worker>();
     })
     .ConfigureLogging(logging =>
     {
