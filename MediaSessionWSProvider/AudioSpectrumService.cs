@@ -1,7 +1,19 @@
-using System.Threading.Channels;
 using NAudio.Wave;
 using NAudio.Dsp;
+using NAudio.CoreAudioApi;
+
 using Complex = NAudio.Dsp.Complex;
+        var enumerator = new MMDeviceEnumerator();
+        var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+        foreach (var dev in devices)
+        {
+            _logger.LogInformation("Render device available: {Name} ({Id})", dev.FriendlyName, dev.ID);
+        }
+
+        var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+        _logger.LogInformation("Using default render device for capture: {Name} ({Id})", defaultDevice.FriendlyName, defaultDevice.ID);
+
+        _capture = new WasapiLoopbackCapture(defaultDevice);
 using Timer = System.Threading.Timer;
 
 namespace MediaSessionWSProvider;
