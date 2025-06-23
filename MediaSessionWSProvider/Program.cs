@@ -7,12 +7,13 @@ using Microsoft.Extensions.Logging;
 Application.EnableVisualStyles();
 Application.SetCompatibleTextRenderingDefault(false);
 
-using var tray = new TrayHost();
 
 // Создаём хост вручную
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices(services =>
     {
+        services.AddSingleton<SettingsService>();
+        services.AddSingleton<FftService>();
         services.AddHostedService<Worker>();
     })
     .ConfigureLogging(logging =>
@@ -22,6 +23,8 @@ var host = Host.CreateDefaultBuilder(args)
         logging.AddEventLog();
     })
     .Build();
+
+using var tray = new TrayHost(host.Services.GetRequiredService<FftService>());
 
 // Запускаем хост асинхронно
 await host.StartAsync();

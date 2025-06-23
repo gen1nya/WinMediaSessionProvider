@@ -17,6 +17,7 @@ namespace MediaSessionWSProvider
         private readonly List<WebSocket> _clients = new();
         private readonly Channel<string> _messageChannel = Channel.CreateUnbounded<string>();
         private readonly object _clientsLock = new();
+        private readonly FftService _fftService;
 
         private static readonly JsonSerializerOptions _jsonOptions = new()
         {
@@ -27,9 +28,11 @@ namespace MediaSessionWSProvider
         private FullMediaState _lastFullState;
         private CancellationTokenSource _internalCts = new();
 
-        public Worker(ILogger<Worker> logger)
+        public Worker(ILogger<Worker> logger, FftService fftService)
         {
             _logger = logger;
+            _fftService = fftService;
+            _fftService.SpectrumAvailable += OnSpectrum;
         }
 
         public override Task StopAsync(CancellationToken cancellationToken)
@@ -257,6 +260,24 @@ namespace MediaSessionWSProvider
                 {
                     foreach (var ws in dead) _clients.Remove(ws);
                 }
+            }
+        }
+
+        private async void OnSpectrum(float[] data)
+        {
+            List<WebSocket> clientsSnapshot;
+            lock (_clientsLock) clientsSnapshot = _clients.Where(ws => ws.State == WebSocketState.Open).ToList();
+            if (!clientsSnapshot.Any()) return;
+
+            try
+            {
+                var envelope = new { type = "fft", data };
+                var json = JsonSerializer.Serialize(envelope, _jsonOptions);
+                await _messageChannel.Writer.WriteAsync(json);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error sending FFT data");
             }
         }
 
