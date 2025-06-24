@@ -1,9 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Linq;
-using Microsoft.Extensions.Logging;
 using NAudio.CoreAudioApi;
 using NAudio.Dsp;
 using NAudio.Wave;
@@ -13,9 +7,15 @@ namespace MediaSessionWSProvider;
 
 public class FftService : IDisposable
 {
-    private const int FftLength = 2048;
+    private const int FftLength = 4096;
     private const int Columns = 256;
-    private const double DbFloor = -60.0;
+    private const double DbFloor = -80.0;
+    
+    private const int HopSize = 256;
+    private FloatRingBuffer _sampleBuffer = new(FftLength * 4); // запас
+    private readonly float[] _fftInput = new float[FftLength];
+    private readonly TripleBuffer<float[]> _spectrumBuffer = new(() => new float[Columns]);
+
 
     private readonly double[] _bandCenters =
     {
@@ -34,15 +34,12 @@ public class FftService : IDisposable
     private Thread? _worker;
     private CancellationTokenSource? _cts;
     private Timer? _notifyTimer;
-    private readonly object _dataLock = new();
-    private readonly float[] _latestSpectrum = new float[Columns];
 
     private int[]? _startBin;
     private int[]? _endBin;
     private int _sampleRate;
     private int _bytesPerSample;
     private int _channels;
-    private int _bytesNeeded;
     private readonly Complex[] _fftBuf = new Complex[FftLength];
 
     private bool _enabled;
@@ -89,7 +86,7 @@ public class FftService : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(ex, "Ошибка при перечислении устройств");
+            _logger.LogInformation(ex, "error while enumerating audio devices.");
         }
         return list;
     }
@@ -135,7 +132,6 @@ public class FftService : IDisposable
             _sampleRate = _capture.WaveFormat.SampleRate;
             _bytesPerSample = _capture.WaveFormat.BitsPerSample / 8;
             _channels = _capture.WaveFormat.Channels;
-            _bytesNeeded = FftLength * _bytesPerSample * _channels;
             CalculateBins();
 
             _cts = new CancellationTokenSource();
@@ -148,7 +144,7 @@ public class FftService : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(ex, "Ошибка старта захвата FFT");
+            _logger.LogInformation(ex, "error while starting FFT capture.");
             StopCapture();
         }
     }
@@ -170,7 +166,7 @@ public class FftService : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(ex, "Ошибка остановки захвата FFT");
+            _logger.LogInformation(ex, "error while stopping FFT");
         }
     }
 
@@ -195,73 +191,83 @@ public class FftService : IDisposable
     private void WorkerLoop(CancellationToken token)
     {
         if (_buffer == null) return;
+
+        int bytesPerHop = HopSize * _bytesPerSample * _channels;
+        byte[]  tempBytes  = new byte[bytesPerHop];
+        float[] hopSamples = new float[HopSize];
+
         while (!token.IsCancellationRequested)
         {
-            if (_buffer.BufferedBytes < _bytesNeeded)
+            if (_buffer.BufferedBytes < bytesPerHop)
             {
-                Thread.Sleep(5);
+                Thread.Sleep(2);
                 continue;
             }
 
-            var raw = new byte[_bytesNeeded];
-            _buffer.Read(raw, 0, raw.Length);
-
-            float maxSample = 0f;
-            for (int i = 0; i < FftLength; i++)
+            int bytesRead = _buffer.Read(tempBytes, 0, bytesPerHop);
+            int samplesRead = bytesRead / (_bytesPerSample * _channels);
+            if (samplesRead == 0) continue;          
+            
+            for (int i = 0; i < samplesRead; i++)
             {
                 int pos = i * _bytesPerSample * _channels;
-                float sample = _bytesPerSample == 4 ? BitConverter.ToSingle(raw, pos)
-                                                    : BitConverter.ToInt16(raw, pos) / 32768f;
-                sample *= (float)FastFourierTransform.HammingWindow(i, FftLength);
-                _fftBuf[i].X = sample;
-                _fftBuf[i].Y = 0;
-                float abs = Math.Abs(sample);
-                if (abs > maxSample) maxSample = abs;
+                hopSamples[i] = _bytesPerSample == 4
+                    ? BitConverter.ToSingle(tempBytes, pos)
+                    : BitConverter.ToInt16(tempBytes, pos) / 32768f;
             }
-            FastFourierTransform.FFT(true, (int)Math.Log2(FftLength), _fftBuf);
 
-            var res = new float[Columns];
+            _sampleBuffer.Write(hopSamples, 0, samplesRead);
+            
+            if (_sampleBuffer.Count < FftLength) continue;
+            
+            _sampleBuffer.ReadLatest(_fftInput);
+            
+            for (int i = 0; i < FftLength; i++)
+            {
+                float windowed = _fftInput[i] *
+                                 (float)FastFourierTransform.HammingWindow(i, FftLength);
+                _fftBuf[i].X = windowed;
+                _fftBuf[i].Y = 0;
+            }
+            
+            FastFourierTransform.FFT(true, (int)Math.Log2(FftLength), _fftBuf);
+            
+            var spectrum = _spectrumBuffer.GetWriteBuffer();
             for (int b = 0; b < Columns; b++)
             {
                 double sum = 0;
                 int binCnt = 0;
+
                 for (int j = _startBin![b]; j < _endBin![b]; j++, binCnt++)
                 {
-                    var re = _fftBuf[j].X;
-                    var im = _fftBuf[j].Y;
+                    double re = _fftBuf[j].X;
+                    double im = _fftBuf[j].Y;
                     sum += Math.Sqrt(re * re + im * im);
                 }
-                double lin = binCnt > 0 ? sum / binCnt : 0;
-                double db = 20 * Math.Log10(lin + 1e-20);
+
+                double lin     = binCnt > 0 ? sum / binCnt : 0;
+                double db      = 20 * Math.Log10(lin + 1e-20);
                 double clamped = Math.Max(db, DbFloor);
-                res[b] = (float)((clamped - DbFloor) / -DbFloor);
+                spectrum[b]    = (float)((clamped - DbFloor) / -DbFloor);
             }
-
-            float maxRes = res.Max();
-            //_logger.LogInformation("WorkerLoop buffer max {BufferMax}, FFT max {FftMax}", maxSample, maxRes);
-
-            lock (_dataLock)
-            {
-                Array.Copy(res, _latestSpectrum, Columns);
-            }
+            _spectrumBuffer.Publish();
         }
+
     }
 
     private void NotifySpectrum()
     {
-        float[] data = new float[Columns];
-        lock (_dataLock)
-        {
-            Array.Copy(_latestSpectrum, data, Columns);
-        }
+        float[] data = _spectrumBuffer.GetReadBuffer();
+        float[] copy = new float[data.Length];
+        Array.Copy(data, copy, data.Length);
 
         try
         {
-            SpectrumAvailable?.Invoke(data);
+            SpectrumAvailable?.Invoke(copy);
         }
         catch (Exception ex)
         {
-            _logger.LogInformation(ex, "Ошибка SpectrumAvailable обработчика");
+            _logger.LogInformation(ex, "error while reading spectrum");
         }
     }
 
