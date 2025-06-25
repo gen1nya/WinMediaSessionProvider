@@ -234,6 +234,8 @@ namespace MediaSessionWSProvider
             }
         }
 
+        private static readonly TimeSpan _sendTimeout = TimeSpan.FromSeconds(2);
+
         private async Task BroadcastAsync(string message, CancellationToken token)
         {
             var buffer = Encoding.UTF8.GetBytes(message);
@@ -243,13 +245,16 @@ namespace MediaSessionWSProvider
 
             foreach (var ws in clientsSnapshot)
             {
-                try
+                if (ws.State != WebSocketState.Open)
                 {
-                    await ws.SendAsync(buffer, WebSocketMessageType.Text, true, token).ConfigureAwait(false);
+                    dead.Add(ws);
+                    continue;
                 }
-                catch (WebSocketException ex)
+
+                var sendOk = await TrySendWithTimeoutAsync(ws, buffer, token, _sendTimeout);
+                if (!sendOk)
                 {
-                    _logger.LogWarning(ex, "WebSocket send error, removing client");
+                    _logger.LogWarning("WebSocket send timed out, removing client");
                     dead.Add(ws);
                 }
             }
@@ -258,8 +263,37 @@ namespace MediaSessionWSProvider
             {
                 lock (_clientsLock)
                 {
-                    foreach (var ws in dead) _clients.Remove(ws);
+                    foreach (var ws in dead)
+                    {
+                        _clients.Remove(ws);
+                        try
+                        {
+                            ws.Abort();
+                            ws.Dispose();
+                        }
+                        catch { /* ignore */ }
+                    }
                 }
+            }
+        }
+
+        private static async Task<bool> TrySendWithTimeoutAsync(WebSocket ws, byte[] buffer, CancellationToken globalToken, TimeSpan timeout)
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(globalToken);
+            cts.CancelAfter(timeout);
+            try
+            {
+                await ws.SendAsync(buffer, WebSocketMessageType.Text, true, cts.Token).ConfigureAwait(false);
+                return true;
+            }
+            catch (OperationCanceledException) when (!globalToken.IsCancellationRequested)
+            {
+                ws.Abort();
+                return false;
+            }
+            catch (WebSocketException)
+            {
+                return false;
             }
         }
 
@@ -346,6 +380,10 @@ namespace MediaSessionWSProvider
             {
                 _logger.LogWarning(ex, "Иная ошибка при CloseAsync, Abort.");
                 ws.Abort();
+            }
+            finally
+            {
+                ws.Dispose();
             }
         }
 
