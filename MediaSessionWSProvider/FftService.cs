@@ -138,7 +138,7 @@ public class FftService : IDisposable
             _worker = new Thread(() => WorkerLoop(_cts.Token)) { IsBackground = true };
             _worker.Start();
 
-            _notifyTimer = new Timer(_ => NotifySpectrum(), null, 0, 33);
+            _notifyTimer = new Timer(_ => NotifySpectrum(), null, 0, 32);
 
             _logger.LogInformation("FFT capture started");
         }
@@ -233,6 +233,7 @@ public class FftService : IDisposable
             FastFourierTransform.FFT(true, (int)Math.Log2(FftLength), _fftBuf);
             
             var spectrum = _spectrumBuffer.GetWriteBuffer();
+            double masterGain = 2;
             for (int b = 0; b < Columns; b++)
             {
                 double sum = 0;
@@ -248,7 +249,10 @@ public class FftService : IDisposable
                 double lin     = binCnt > 0 ? sum / binCnt : 0;
                 double db      = 20 * Math.Log10(lin + 1e-20);
                 double clamped = Math.Max(db, DbFloor);
-                spectrum[b]    = (float)((clamped - DbFloor) / -DbFloor);
+                //spectrum[b]    = (float)((clamped - DbFloor) / -DbFloor);
+                double norm = (double)(b + 10) / (Columns + 10);  // TODO experimental
+                double gain = Math.Pow(norm, 0.35);  // TODO experimental
+                spectrum[b]    = (float)(((clamped - DbFloor) / -DbFloor) * gain * masterGain);
             }
             _spectrumBuffer.Publish();
         }
