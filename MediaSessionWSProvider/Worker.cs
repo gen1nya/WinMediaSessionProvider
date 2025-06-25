@@ -15,7 +15,8 @@ namespace MediaSessionWSProvider
         private HttpListener _httpListener;
         private GlobalSystemMediaTransportControlsSessionManager _sessionManager;
         private readonly List<WebSocket> _clients = new();
-        private readonly Channel<string> _messageChannel = Channel.CreateUnbounded<string>();
+        private readonly Channel<string> _messageChannel = Channel.CreateUnbounded<string>(
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
         private readonly object _clientsLock = new();
         private readonly FftService _fftService;
 
@@ -39,6 +40,8 @@ namespace MediaSessionWSProvider
         {
             _logger.LogInformation("StopAsync called. Cleaning up...");
             _internalCts.Cancel();
+
+            _fftService.SpectrumAvailable -= OnSpectrum;
             
             try
             {
@@ -96,6 +99,33 @@ namespace MediaSessionWSProvider
             catch (OperationCanceledException)
             {
                 
+            }
+        }
+
+        private async Task ListenClientAsync(WebSocket ws, CancellationToken token)
+        {
+            var buffer = new byte[1];
+            try
+            {
+                while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
+                {
+                    var result = await ws.ReceiveAsync(buffer, token).ConfigureAwait(false);
+                    if (result.CloseStatus.HasValue)
+                        break;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // ignore
+            }
+            catch (WebSocketException)
+            {
+                // ignore
+            }
+            finally
+            {
+                lock (_clientsLock) _clients.Remove(ws);
+                try { ws.Abort(); ws.Dispose(); } catch { }
             }
         }
 
@@ -183,6 +213,7 @@ namespace MediaSessionWSProvider
                     var ws = wsContext.WebSocket;
                     lock (_clientsLock) _clients.Add(ws);
                     _logger.LogInformation("WebSocket client connected");
+                    _ = ListenClientAsync(ws, token); // monitor for remote close
 
                     // Отправка последнего состояния сразу же новому клиенту
                     if (_lastFullState != null && ws.State == WebSocketState.Open)
@@ -404,6 +435,7 @@ namespace MediaSessionWSProvider
                 _httpListener?.Close();
             }
             catch { }
+            _fftService.SpectrumAvailable -= OnSpectrum;
             base.Dispose();
         }
     }
