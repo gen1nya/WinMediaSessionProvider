@@ -190,7 +190,15 @@ namespace MediaSessionWSProvider
                         var metaEnvelope = new { type = "metadata", data = _lastFullState };
                         var metaJson = JsonSerializer.Serialize(metaEnvelope, _jsonOptions);
                         var buffer = Encoding.UTF8.GetBytes(metaJson);
-                        await ws.SendAsync(buffer, WebSocketMessageType.Text, endOfMessage: true, token).ConfigureAwait(false);
+
+                        var ok = await TrySendWithTimeoutAsync(ws, buffer, token, _sendTimeout).ConfigureAwait(false);
+                        if (!ok)
+                        {
+                            _logger.LogWarning("Failed to send initial metadata, removing client");
+                            lock (_clientsLock) _clients.Remove(ws);
+                            try { ws.Abort(); ws.Dispose(); } catch { }
+                            continue;
+                        }
                     }
                 }
                 catch (HttpListenerException)
@@ -234,7 +242,8 @@ namespace MediaSessionWSProvider
             }
         }
 
-        private static readonly TimeSpan _sendTimeout = TimeSpan.FromSeconds(2);
+        // Timeout for WebSocket send operations to avoid hanging on dead clients
+        private static readonly TimeSpan _sendTimeout = TimeSpan.FromSeconds(10);
 
         private async Task BroadcastAsync(string message, CancellationToken token)
         {
@@ -357,6 +366,7 @@ namespace MediaSessionWSProvider
             if (ws.State != WebSocketState.Open && ws.State != WebSocketState.CloseReceived)
             {
                 ws.Abort();
+                ws.Dispose();
                 return;
             }
 
