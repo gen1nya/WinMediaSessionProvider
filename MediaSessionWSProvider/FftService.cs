@@ -7,7 +7,7 @@ namespace MediaSessionWSProvider;
 
 public class FftService : IDisposable
 {
-    private const int FftLength = 4096;
+    private const int FftLength = 2048;
     private const int Columns = 256;
     private const double DbFloor = -80.0;
     

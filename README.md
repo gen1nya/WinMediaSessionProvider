@@ -37,7 +37,7 @@
 
 3. **Подключение к WebSocket-серверу:**
 
-   * WebSocket-сервер будет доступен по адресу `ws://localhost:5001/ws/`.
+   * WebSocket-сервер будет доступен по адресу `ws://localhost:5001/ws`.
    * Подключитесь к нему с помощью любого WebSocket-клиента, чтобы получать обновления о текущей медиа-сессии.
 
 ---
@@ -78,7 +78,7 @@
 * **Тип приложения:** Windows Application (`WinExe`)
 * **Основные зависимости:**
 
-  * `System.Net.WebSockets`
+  * `websocket-sharp-core`
   * `Windows.Media.Control` (для доступа к медиа-сессиям)
   * `System.Text.Json`
 
