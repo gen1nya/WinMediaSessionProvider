@@ -15,7 +15,8 @@ namespace MediaSessionWSProvider
         private HttpListener _httpListener;
         private GlobalSystemMediaTransportControlsSessionManager _sessionManager;
         private readonly List<WebSocket> _clients = new();
-        private readonly Channel<string> _messageChannel = Channel.CreateUnbounded<string>();
+        private readonly Channel<string> _messageChannel = Channel.CreateUnbounded<string>(
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
         private readonly object _clientsLock = new();
         private readonly FftService _fftService;
 
@@ -39,6 +40,8 @@ namespace MediaSessionWSProvider
         {
             _logger.LogInformation("StopAsync called. Cleaning up...");
             _internalCts.Cancel();
+
+            _fftService.SpectrumAvailable -= OnSpectrum;
             
             try
             {
@@ -96,6 +99,33 @@ namespace MediaSessionWSProvider
             catch (OperationCanceledException)
             {
                 
+            }
+        }
+
+        private async Task ListenClientAsync(WebSocket ws, CancellationToken token)
+        {
+            var buffer = new byte[1];
+            try
+            {
+                while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
+                {
+                    var result = await ws.ReceiveAsync(buffer, token).ConfigureAwait(false);
+                    if (result.CloseStatus.HasValue)
+                        break;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // ignore
+            }
+            catch (WebSocketException)
+            {
+                // ignore
+            }
+            finally
+            {
+                lock (_clientsLock) _clients.Remove(ws);
+                try { ws.Abort(); ws.Dispose(); } catch { }
             }
         }
 
@@ -183,6 +213,7 @@ namespace MediaSessionWSProvider
                     var ws = wsContext.WebSocket;
                     lock (_clientsLock) _clients.Add(ws);
                     _logger.LogInformation("WebSocket client connected");
+                    _ = ListenClientAsync(ws, token); // monitor for remote close
 
                     // Отправка последнего состояния сразу же новому клиенту
                     if (_lastFullState != null && ws.State == WebSocketState.Open)
@@ -190,7 +221,15 @@ namespace MediaSessionWSProvider
                         var metaEnvelope = new { type = "metadata", data = _lastFullState };
                         var metaJson = JsonSerializer.Serialize(metaEnvelope, _jsonOptions);
                         var buffer = Encoding.UTF8.GetBytes(metaJson);
-                        await ws.SendAsync(buffer, WebSocketMessageType.Text, endOfMessage: true, token).ConfigureAwait(false);
+
+                        var ok = await TrySendWithTimeoutAsync(ws, buffer, token, _sendTimeout).ConfigureAwait(false);
+                        if (!ok)
+                        {
+                            _logger.LogWarning("Failed to send initial metadata, removing client");
+                            lock (_clientsLock) _clients.Remove(ws);
+                            try { ws.Abort(); ws.Dispose(); } catch { }
+                            continue;
+                        }
                     }
                 }
                 catch (HttpListenerException)
@@ -234,6 +273,9 @@ namespace MediaSessionWSProvider
             }
         }
 
+        // Timeout for WebSocket send operations to avoid hanging on dead clients
+        private static readonly TimeSpan _sendTimeout = TimeSpan.FromSeconds(10);
+
         private async Task BroadcastAsync(string message, CancellationToken token)
         {
             var buffer = Encoding.UTF8.GetBytes(message);
@@ -243,13 +285,16 @@ namespace MediaSessionWSProvider
 
             foreach (var ws in clientsSnapshot)
             {
-                try
+                if (ws.State != WebSocketState.Open)
                 {
-                    await ws.SendAsync(buffer, WebSocketMessageType.Text, true, token).ConfigureAwait(false);
+                    dead.Add(ws);
+                    continue;
                 }
-                catch (WebSocketException ex)
+
+                var sendOk = await TrySendWithTimeoutAsync(ws, buffer, token, _sendTimeout);
+                if (!sendOk)
                 {
-                    _logger.LogWarning(ex, "WebSocket send error, removing client");
+                    _logger.LogWarning("WebSocket send timed out, removing client");
                     dead.Add(ws);
                 }
             }
@@ -258,8 +303,37 @@ namespace MediaSessionWSProvider
             {
                 lock (_clientsLock)
                 {
-                    foreach (var ws in dead) _clients.Remove(ws);
+                    foreach (var ws in dead)
+                    {
+                        _clients.Remove(ws);
+                        try
+                        {
+                            ws.Abort();
+                            ws.Dispose();
+                        }
+                        catch { /* ignore */ }
+                    }
                 }
+            }
+        }
+
+        private static async Task<bool> TrySendWithTimeoutAsync(WebSocket ws, byte[] buffer, CancellationToken globalToken, TimeSpan timeout)
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(globalToken);
+            cts.CancelAfter(timeout);
+            try
+            {
+                await ws.SendAsync(buffer, WebSocketMessageType.Text, true, cts.Token).ConfigureAwait(false);
+                return true;
+            }
+            catch (OperationCanceledException) when (!globalToken.IsCancellationRequested)
+            {
+                ws.Abort();
+                return false;
+            }
+            catch (WebSocketException)
+            {
+                return false;
             }
         }
 
@@ -323,6 +397,7 @@ namespace MediaSessionWSProvider
             if (ws.State != WebSocketState.Open && ws.State != WebSocketState.CloseReceived)
             {
                 ws.Abort();
+                ws.Dispose();
                 return;
             }
 
@@ -347,6 +422,10 @@ namespace MediaSessionWSProvider
                 _logger.LogWarning(ex, "Иная ошибка при CloseAsync, Abort.");
                 ws.Abort();
             }
+            finally
+            {
+                ws.Dispose();
+            }
         }
 
         public override void Dispose()
@@ -356,6 +435,7 @@ namespace MediaSessionWSProvider
                 _httpListener?.Close();
             }
             catch { }
+            _fftService.SpectrumAvailable -= OnSpectrum;
             base.Dispose();
         }
     }
