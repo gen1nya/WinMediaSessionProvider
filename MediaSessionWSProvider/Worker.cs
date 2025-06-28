@@ -104,17 +104,14 @@ namespace MediaSessionWSProvider
 
             async void MediaPropertiesChangedHandler(GlobalSystemMediaTransportControlsSession mSession, MediaPropertiesChangedEventArgs args)
             {
-                _logger.LogInformation("MediaPropertiesChanged event");
                 await HandleFullStateChangeAsync(token);
             }
             async void PlaybackInfoChangedHandler(GlobalSystemMediaTransportControlsSession mSession, PlaybackInfoChangedEventArgs args)
             {
-                _logger.LogInformation("PlaybackInfoChanged event");
                 await HandleFullStateChangeAsync(token);
             }
             async void TimelinePropertiesChangedHandler(GlobalSystemMediaTransportControlsSession mSession, TimelinePropertiesChangedEventArgs args)
             {
-                _logger.LogInformation("TimelinePropertiesChanged event");
                 await HandleFullStateChangeAsync(token);
             }
         }
