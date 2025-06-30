@@ -10,7 +10,6 @@ namespace MediaSessionWSProvider
     {
         private readonly ILogger<Worker> _logger;
         private WebSocketServer _wsServer;
-        private MediaBroadcast? _mediaBroadcast;
         private GlobalSystemMediaTransportControlsSessionManager _sessionManager;
         private readonly FftService _fftService;
 
@@ -52,13 +51,11 @@ namespace MediaSessionWSProvider
         { 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _internalCts.Token);
             var linkedToken = linkedCts.Token;
-            
+
             _wsServer = new WebSocketServer("ws://localhost:5001");
-            _wsServer.AddWebSocketService<MediaBroadcast>("/ws", () =>
-            {
-                _mediaBroadcast = new MediaBroadcast();
-                return _mediaBroadcast;
-            });
+            _wsServer.AddWebSocketService<MediaBroadcast>("/ws");
+            _wsServer.KeepClean   = true;
+            _wsServer.WaitTime    = TimeSpan.FromSeconds(10);
             _wsServer.Start();
             
             _sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
@@ -133,7 +130,7 @@ namespace MediaSessionWSProvider
 
                 var envelope = new { type = "metadata", data = fullState };
                 var json = JsonSerializer.Serialize(envelope, _jsonOptions);
-                _mediaBroadcast?.PushUpdate(json);
+                _wsServer.WebSocketServices["/ws"].Sessions.Broadcast(json);
 
                 _logger.LogInformation("Broadcasted metadata: {Title} - {Artist}", fullState.title, fullState.artist);
             }
@@ -145,12 +142,11 @@ namespace MediaSessionWSProvider
 
         private void OnSpectrum(float[] data)
         {
-            if (_mediaBroadcast == null) return;
             try
             {
                 var envelope = new { type = "fft", data };
                 var json = JsonSerializer.Serialize(envelope, _jsonOptions);
-                _mediaBroadcast.PushUpdate(json);
+                _wsServer.WebSocketServices["/ws"].Sessions.Broadcast(json);
             }
             catch (Exception ex)
             {
