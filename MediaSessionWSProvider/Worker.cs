@@ -56,7 +56,7 @@ namespace MediaSessionWSProvider
             var linkedToken = linkedCts.Token;
 
             _wsServer = new WebSocketServer("ws://localhost:5001");
-            _wsServer.AddWebSocketService("/ws", () => new MediaBroadcast(_metadataCache));
+            _wsServer.AddWebSocketService<MediaBroadcast>("/ws", () => new MediaBroadcast(_metadataCache));
             _wsServer.KeepClean   = true;
             _wsServer.WaitTime    = TimeSpan.FromSeconds(10);
             _wsServer.Start();
