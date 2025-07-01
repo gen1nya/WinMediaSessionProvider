@@ -9,7 +9,7 @@ namespace MediaSessionWSProvider;
 
 public class MediaBroadcast : WebSocketBehavior
 {
-    private readonly MetadataCache _cache;
+    public MetadataCache? Cache { private get; set; }
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -17,9 +17,8 @@ public class MediaBroadcast : WebSocketBehavior
         WriteIndented = false
     };
 
-    public MediaBroadcast(MetadataCache cache)
+    public MediaBroadcast()
     {
-        _cache = cache;
     }
 
     protected override void OnOpen()
@@ -27,7 +26,7 @@ public class MediaBroadcast : WebSocketBehavior
         Console.WriteLine($"total client connected {Sessions.Count}");
         Console.WriteLine($"Client connected: {ID}");
 
-        var state = _cache.Last;
+        var state = Cache?.Last;
         if (state != null)
         {
             var envelope = new { type = "metadata", data = state };
