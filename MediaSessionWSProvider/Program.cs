@@ -14,6 +14,7 @@ var host = Host.CreateDefaultBuilder(args)
     {
         services.AddSingleton<SettingsService>();
         services.AddSingleton<FftService>();
+        services.AddSingleton<MetadataCache>();
         services.AddHostedService<Worker>();
     })
     .ConfigureLogging(logging =>
