@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using System.Text.Unicode;
 using WebSocketSharp.Server;
 using Windows.Media.Control;
+// The Worker manages websocket broadcasting and keeps track of the latest metadata
 
 namespace MediaSessionWSProvider
 {
@@ -12,6 +13,7 @@ namespace MediaSessionWSProvider
         private WebSocketServer _wsServer;
         private GlobalSystemMediaTransportControlsSessionManager _sessionManager;
         private readonly FftService _fftService;
+        private readonly MetadataCache _metadataCache;
 
         private static readonly JsonSerializerOptions _jsonOptions = new()
         {
@@ -19,13 +21,14 @@ namespace MediaSessionWSProvider
             WriteIndented = false
         };
 
-        private FullMediaState _lastFullState;
+        private FullMediaState? _lastFullState;
         private CancellationTokenSource _internalCts = new();
 
-        public Worker(ILogger<Worker> logger, FftService fftService)
+        public Worker(ILogger<Worker> logger, FftService fftService, MetadataCache metadataCache)
         {
             _logger = logger;
             _fftService = fftService;
+            _metadataCache = metadataCache;
             _fftService.SpectrumAvailable += OnSpectrum;
         }
 
@@ -53,7 +56,7 @@ namespace MediaSessionWSProvider
             var linkedToken = linkedCts.Token;
 
             _wsServer = new WebSocketServer("ws://localhost:5001");
-            _wsServer.AddWebSocketService<MediaBroadcast>("/ws");
+            _wsServer.AddWebSocketService<MediaBroadcast>("/ws", b => b.Cache = _metadataCache);
             _wsServer.KeepClean   = true;
             _wsServer.WaitTime    = TimeSpan.FromSeconds(10);
             _wsServer.Start();
@@ -127,6 +130,7 @@ namespace MediaSessionWSProvider
                     return;
                 }
                 _lastFullState = fullState;
+                _metadataCache.Update(fullState);
 
                 var envelope = new { type = "metadata", data = fullState };
                 var json = JsonSerializer.Serialize(envelope, _jsonOptions);
